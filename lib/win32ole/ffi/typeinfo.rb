@@ -1,0 +1,488 @@
+# frozen_string_literal: true
+
+require 'fiddle'
+require 'fiddle/import'
+require 'win32ole/ffi/win32'
+
+class WIN32OLE
+  module TypeInfo
+    extend Fiddle::Importer
+
+    # Each struct's [types, members], for layout_offsetof: Ruby 2.6/2.7's
+    # fiddle struct classes don't keep them.
+    LAYOUTS = {}
+    private_constant :LAYOUTS
+
+    def self.struct(signature)
+      super.tap { |klass| LAYOUTS[klass] = parse_struct_signature(signature, type_alias) }
+    end
+
+    GUID = struct([
+      'unsigned int Data1', 'unsigned short Data2', 'unsigned short Data3',
+      'unsigned char Data4[8]'
+    ])
+
+    TYPEDESC = struct([
+      'void *union_ptr',  # lptdesc / lpadesc / hreftype share this slot;
+                          # caller's context determines which interpretation applies
+      'unsigned short vt'
+    ])
+
+    ELEMDESC = struct([
+      'void *tdesc_union_ptr', 'unsigned short tdesc_vt',   # TYPEDESC tdesc, inlined
+      'void *paramdescex_ptr', 'unsigned short wParamFlags' # PARAMDESC/IDLDESC union
+    ])
+
+    FUNCDESC = struct([
+      'int memid', 'char _pad1[4]',  # memid + padding to align lprgscode
+      'void *lprgscode', 'void *lprgelemdescParam',
+      'int funckind', 'int invkind', 'int callconv',
+      'short cParams', 'short cParamsOpt', 'short oVft', 'short cScodes',
+      'char _pad2[4]',  # padding to align elemdescFunc
+      # elemdescFunc (ELEMDESC, inlined) — same 4-field shape as ELEMDESC above
+      'void *ret_tdesc_union_ptr', 'unsigned short ret_tdesc_vt', 'char _pad3[6]',
+      'void *ret_paramdescex_ptr', 'unsigned short ret_wParamFlags', 'char _pad4[6]',
+      'unsigned short wFuncFlags', 'char _pad5[6]'
+    ])
+
+    VARDESC = struct([
+      'int memid', 'char _pad1[4]',  # memid + padding to align lpstrSchema
+      'void *lpstrSchema', 'void *union_oInst_or_lpvarValue',
+      # elemdescVar (ELEMDESC, inlined) — full 32-byte block: TYPEDESC (16) + PARAMDESC/IDLDESC (16)
+      'void *tdesc_union_ptr', 'unsigned short tdesc_vt', 'char _pad2[6]',  # TYPEDESC: 8+2+6=16
+      'void *paramdescex_ptr', 'unsigned short wParamFlags', 'char _pad3[6]',  # PARAMDESC/IDLDESC: 8+2+6=16
+      'unsigned short wVarFlags', 'int varkind'
+    ])
+
+    TYPEATTR = struct([
+      'unsigned int guid_Data1', 'unsigned short guid_Data2',
+      'unsigned short guid_Data3', 'unsigned char guid_Data4[8]',
+      'unsigned int lcid', 'unsigned int dwReserved',
+      'int memidConstructor', 'int memidDestructor',
+      'void *lpstrSchema', 'unsigned int cbSizeInstance',
+      'int typekind', 'unsigned short cFuncs', 'unsigned short cVars',
+      'unsigned short cImplTypes', 'unsigned short cbSizeVft',
+      'unsigned short cbAlignment', 'unsigned short wTypeFlags',
+      'unsigned short wMajorVerNum', 'unsigned short wMinorVerNum',
+      # tdescAlias (TYPEDESC, inlined) — complete 16-byte block with trailing padding
+      'void *tdescAlias_union_ptr', 'unsigned short tdescAlias_vt', 'char _pad1[6]',
+      # idldescType (IDLDESC: ULONG_PTR dwReserved + USHORT wIDLFlags)
+      'void *idldescType_dwReserved', 'unsigned short idldescType_wIDLFlags'
+    ])
+
+    ITYPEINFO_VTBL = {
+      GetTypeAttr: 3, GetFuncDesc: 5, GetVarDesc: 6, GetNames: 7,
+      GetRefTypeOfImplType: 8, GetImplTypeFlags: 9, GetIDsOfNames: 10,
+      Invoke: 11, GetDocumentation: 12, GetDllEntry: 13, GetRefTypeInfo: 14,
+      AddressOfMember: 15, CreateInstance: 16, GetMops: 17,
+      GetContainingTypeLib: 18, ReleaseTypeAttr: 19, ReleaseFuncDesc: 20,
+      ReleaseVarDesc: 21
+    }.freeze
+
+    ITYPELIB_VTBL = {
+      GetTypeInfoCount: 3, GetTypeInfo: 4, GetTypeInfoType: 5,
+      GetTypeInfoOfGuid: 6, GetLibAttr: 7, GetTypeComp: 8,
+      GetDocumentation: 9, IsName: 10, FindName: 11, ReleaseTLibAttr: 12
+    }.freeze
+
+    # Fiddle::CStruct.offsetof is fiddle 1.1+; Ruby 2.6-3.0's fiddle (1.0.x)
+    # lacks it. JRuby's (1.1.4+) has it.
+    def self.offsetof(struct, name)
+      struct.respond_to?(:offsetof) ? struct.offsetof(name) : layout_offsetof(struct, name)
+    end
+
+    # Lays the members out as Fiddle::CStructEntity#set_ctypes does.
+    def self.layout_offsetof(struct, name)
+      offset = 0
+      types, members = LAYOUTS.fetch(struct)
+      types.zip(members) do |(type, count), member|
+        offset = Fiddle::PackInfo.align(offset, Fiddle::PackInfo::ALIGN_MAP[type])
+        return offset if member == name
+
+        offset += Fiddle::PackInfo::SIZE_MAP[type] * (count || 1)
+      end
+      nil
+    end
+
+    TYPEKIND_NAMES = {
+      0 => 'Enum', 1 => 'Record', 2 => 'Module', 3 => 'Interface',
+      4 => 'Dispatch', 5 => 'Class', 6 => 'Alias', 7 => 'Union', 8 => 'Max'
+    }.freeze
+
+    VARKIND_NAMES = {
+      0 => 'PERINSTANCE', 1 => 'STATIC', 2 => 'CONSTANT', 3 => 'DISPATCH'
+    }.freeze
+
+    # Transcribed from MRI's ole_typedesc2val (ext/win32ole/win32ole.c) —
+    # introspection type names, distinct from Win32.variant_ruby_type's much
+    # smaller table (which maps the few VARTYPEs the marshaling code
+    # actually needs to send/receive, not the full set a real type library
+    # can describe). VT_DISPATCH(9) and VT_UNKNOWN(13) are genuinely
+    # different values with genuinely different names — do not conflate them.
+    VARTYPE_NAMES = {
+      0 => 'EMPTY', 1 => 'NULL', 2 => 'I2', 3 => 'I4', 4 => 'R4', 5 => 'R8',
+      6 => 'CY', 7 => 'DATE', 8 => 'BSTR', 9 => 'DISPATCH', 10 => 'ERROR',
+      11 => 'BOOL', 12 => 'VARIANT', 13 => 'UNKNOWN', 14 => 'DECIMAL',
+      16 => 'I1', 17 => 'UI1', 18 => 'UI2', 19 => 'UI4', 20 => 'I8', 21 => 'UI8',
+      22 => 'INT', 23 => 'UINT', 24 => 'VOID', 25 => 'HRESULT', 26 => 'PTR',
+      27 => 'SAFEARRAY', 28 => 'CARRAY', 29 => 'USERDEFINED', 30 => 'LPSTR',
+      31 => 'LPWSTR', 36 => 'RECORD'
+    }.freeze
+
+    INVOKE_FUNC = 0x1
+    INVOKE_PROPERTYGET = 0x2
+    INVOKE_PROPERTYPUT = 0x4
+    INVOKE_PROPERTYPUTREF = 0x8
+
+    module_function
+
+    def vartype_name(vt)
+      VARTYPE_NAMES.fetch(vt) { "Unknown Type #{vt}" }
+    end
+
+    VT_PTR = 26
+    VT_SAFEARRAY = 27
+    VT_USERDEFINED = 29
+    MEMBERID_NIL = -1
+
+    # Mirrors ext/win32ole/win32ole.c's ole_typedesc2val: the type-detail
+    # chain for the TYPEDESC at tdesc_addr, e.g. ["PTR", "USERDEFINED",
+    # "Folder"]. Its last element is what return_type/ole_type report.
+    # The union is read as raw bytes, not through a struct's `void *`
+    # accessor: for VT_USERDEFINED only its low 4 bytes (the HREFTYPE) are
+    # meaningful and the rest can be garbage that overflows a pointer.
+    def typedesc_details(itypeinfo_ptr, tdesc_addr, details = [])
+      tdesc = Fiddle::Pointer.new(tdesc_addr)
+      union = tdesc[0, W::PTR_SIZE].unpack1(W::PACK_PTR)
+      vt = tdesc[W::PTR_SIZE, 2].unpack1('S')
+      details << vartype_name(vt)
+      case vt
+      when VT_PTR, VT_SAFEARRAY
+        typedesc_details(itypeinfo_ptr, union, details)
+      when VT_USERDEFINED
+        name = ref_type_name(itypeinfo_ptr, union & 0xFFFFFFFF)
+        details << name if name
+        details
+      else
+        details
+      end
+    end
+
+    def ref_type_name(itypeinfo_ptr, hreftype)
+      ref_out = ("\x00" * W::PTR_SIZE).b
+      return nil if W.failed?(ref_type_info_fn(itypeinfo_ptr).call(itypeinfo_ptr, hreftype, ref_out))
+
+      ref_ptr = ref_out.unpack1(W::PACK_PTR)
+      begin
+        type_name(ref_ptr)
+      ensure
+        release(ref_ptr)
+      end
+    end
+
+    # The type's own name (GetDocumentation(MEMBERID_NIL)), or nil.
+    def type_name(itypeinfo_ptr)
+      member_name(itypeinfo_ptr, MEMBERID_NIL)
+    end
+
+    def member_name(itypeinfo_ptr, memid)
+      name_out = ("\x00" * W::PTR_SIZE).b
+      hr = documentation_fn_for_typeinfo(itypeinfo_ptr).call(itypeinfo_ptr, memid, name_out, nil, nil, nil)
+      return nil if W.failed?(hr)
+
+      bstr = name_out.unpack1(W::PACK_PTR)
+      name = W.bstr_to_s(bstr)
+      W.sys_free_string.call(bstr) unless bstr.zero?
+      name
+    end
+
+    def release(iunknown_ptr)
+      W.vtable_function(iunknown_ptr, 2, [W::VOIDP], W::DWORD).call(iunknown_ptr)
+    end
+
+    TKIND_COCLASS = 5
+    IMPLTYPEFLAG_FDEFAULT = 0x1
+    IMPLTYPEFLAG_FSOURCE = 0x2
+
+    # Reads one TYPEATTR field (:typekind, :cFuncs, :cVars, :cImplTypes...),
+    # or nil if GetTypeAttr fails.
+    def type_attr_value(itypeinfo_ptr, field)
+      attr_out = ("\x00" * W::PTR_SIZE).b
+      return nil if W.failed?(type_attr_fn(itypeinfo_ptr).call(itypeinfo_ptr, attr_out))
+
+      attr_ptr = attr_out.unpack1(W::PACK_PTR)
+      value = TYPEATTR.new(attr_ptr).send(field)
+      release_type_attr_fn(itypeinfo_ptr).call(itypeinfo_ptr, attr_ptr)
+      value
+    end
+
+    # Yields [impl_type_flags, ref_itypeinfo_ptr] for each implemented type
+    # of itypeinfo_ptr, skipping ones whose flags or ITypeInfo can't be
+    # read, the same loop ole_type_impl_ole_types / ole_methods_from_typeinfo
+    # use. The block owns ref_itypeinfo_ptr: it must release it or hand
+    # it to something that will.
+    def each_impl_type(itypeinfo_ptr)
+      (type_attr_value(itypeinfo_ptr, :cImplTypes) || 0).times do |i|
+        flags_out = ("\x00" * 4).b
+        next if W.failed?(impl_type_flags_fn(itypeinfo_ptr).call(itypeinfo_ptr, i, flags_out))
+
+        href_out = ("\x00" * 4).b
+        next if W.failed?(ref_type_of_impl_type_fn(itypeinfo_ptr).call(itypeinfo_ptr, i, href_out))
+
+        ref_out = ("\x00" * W::PTR_SIZE).b
+        next if W.failed?(ref_type_info_fn(itypeinfo_ptr).call(itypeinfo_ptr, href_out.unpack1('L'), ref_out))
+
+        yield flags_out.unpack1('l'), ref_out.unpack1(W::PACK_PTR)
+      end
+    end
+
+    # ext/win32ole/win32ole_method.c's ole_method_event: true if owner_ptr
+    # is a coclass and one of its source interfaces has, at method_index, a
+    # function named method_name.
+    def method_event?(owner_ptr, method_index, method_name)
+      return false unless type_attr_value(owner_ptr, :typekind) == TKIND_COCLASS
+
+      each_impl_type(owner_ptr) do |flags, ref_ptr|
+        begin
+          next if (flags & IMPLTYPEFLAG_FSOURCE).zero?
+
+          funcdesc_out = ("\x00" * W::PTR_SIZE).b
+          next if W.failed?(func_desc_fn(ref_ptr).call(ref_ptr, method_index, funcdesc_out))
+
+          funcdesc_ptr = funcdesc_out.unpack1(W::PACK_PTR)
+          memid = FUNCDESC.new(funcdesc_ptr).memid
+          release_func_desc_fn(ref_ptr).call(ref_ptr, funcdesc_ptr)
+          return true if member_name(ref_ptr, memid) == method_name
+        ensure
+          release(ref_ptr)
+        end
+      end
+      false
+    end
+
+    def invoke_kind_name(invkind)
+      if (invkind & INVOKE_PROPERTYGET != 0) && (invkind & INVOKE_PROPERTYPUT != 0)
+        'PROPERTY'
+      elsif invkind & INVOKE_PROPERTYGET != 0
+        'PROPERTYGET'
+      elsif invkind & INVOKE_PROPERTYPUT != 0
+        'PROPERTYPUT'
+      elsif invkind & INVOKE_PROPERTYPUTREF != 0
+        'PROPERTYPUTREF'
+      elsif invkind & INVOKE_FUNC != 0
+        'FUNC'
+      else
+        'UNKNOWN'
+      end
+    end
+
+    W = Win32
+    private_constant :W
+
+    # Every *_fn method below memoizes a resolved Fiddle::Function keyed by
+    # the object's VTABLE address (W.vtable_address), not the object's own
+    # address: after a COM object is released, its heap address can be
+    # reused by an unrelated object with a different vtable, so keying by
+    # object address risks resolving a function pointer from the wrong
+    # vtable. Keying by vtable address is both correct (it's the actual
+    # implementation identity) and bounded (one entry per distinct
+    # implementation, not per live object).
+
+    def get_type_info_fn(idispatch_ptr)
+      @get_type_info_fns ||= {}
+      @get_type_info_fns[W.vtable_address(idispatch_ptr)] ||= W.vtable_function(
+        idispatch_ptr, 4, [W::VOIDP, W::DWORD, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def type_attr_fn(itypeinfo_ptr)
+      @type_attr_fns ||= {}
+      @type_attr_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetTypeAttr], [W::VOIDP, W::VOIDP], W::LONG
+      )
+    end
+
+    def func_desc_fn(itypeinfo_ptr)
+      @func_desc_fns ||= {}
+      @func_desc_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetFuncDesc], [W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def var_desc_fn(itypeinfo_ptr)
+      @var_desc_fns ||= {}
+      @var_desc_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetVarDesc], [W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def documentation_fn_for_typeinfo(itypeinfo_ptr)
+      @documentation_fns ||= {}
+      @documentation_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetDocumentation],
+        [W::VOIDP, W::LONG, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP], W::LONG
+      )
+    end
+
+    def containing_typelib_fn(itypeinfo_ptr)
+      @containing_typelib_fns ||= {}
+      @containing_typelib_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetContainingTypeLib], [W::VOIDP, W::VOIDP, W::VOIDP], W::LONG
+      )
+    end
+
+    def release_type_attr_fn(itypeinfo_ptr)
+      @release_type_attr_fns ||= {}
+      @release_type_attr_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:ReleaseTypeAttr], [W::VOIDP, W::VOIDP], W::VOID
+      )
+    end
+
+    def release_func_desc_fn(itypeinfo_ptr)
+      @release_func_desc_fns ||= {}
+      @release_func_desc_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:ReleaseFuncDesc], [W::VOIDP, W::VOIDP], W::VOID
+      )
+    end
+
+    def release_var_desc_fn(itypeinfo_ptr)
+      @release_var_desc_fns ||= {}
+      @release_var_desc_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:ReleaseVarDesc], [W::VOIDP, W::VOIDP], W::VOID
+      )
+    end
+
+    def ref_type_info_fn(itypeinfo_ptr)
+      @ref_type_info_fns ||= {}
+      @ref_type_info_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetRefTypeInfo], [W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def type_info_count_fn(itypelib_ptr)
+      @type_info_count_fns ||= {}
+      @type_info_count_fns[W.vtable_address(itypelib_ptr)] ||= W.vtable_function(
+        itypelib_ptr, ITYPELIB_VTBL[:GetTypeInfoCount], [W::VOIDP], W::DWORD
+      )
+    end
+
+    def type_info_fn(itypelib_ptr)
+      @type_info_fns ||= {}
+      @type_info_fns[W.vtable_address(itypelib_ptr)] ||= W.vtable_function(
+        itypelib_ptr, ITYPELIB_VTBL[:GetTypeInfo], [W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def lib_attr_fn(itypelib_ptr)
+      @lib_attr_fns ||= {}
+      @lib_attr_fns[W.vtable_address(itypelib_ptr)] ||= W.vtable_function(
+        itypelib_ptr, ITYPELIB_VTBL[:GetLibAttr], [W::VOIDP, W::VOIDP], W::LONG
+      )
+    end
+
+    def documentation_fn_for_typelib(itypelib_ptr)
+      @typelib_documentation_fns ||= {}
+      @typelib_documentation_fns[W.vtable_address(itypelib_ptr)] ||= W.vtable_function(
+        itypelib_ptr, ITYPELIB_VTBL[:GetDocumentation],
+        [W::VOIDP, W::LONG, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP], W::LONG
+      )
+    end
+
+    def release_tlib_attr_fn(itypelib_ptr)
+      @release_tlib_attr_fns ||= {}
+      @release_tlib_attr_fns[W.vtable_address(itypelib_ptr)] ||= W.vtable_function(
+        itypelib_ptr, ITYPELIB_VTBL[:ReleaseTLibAttr], [W::VOIDP, W::VOIDP], W::VOID
+      )
+    end
+
+    def impl_type_flags_fn(itypeinfo_ptr)
+      @impl_type_flags_fns ||= {}
+      @impl_type_flags_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetImplTypeFlags], [W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def ref_type_of_impl_type_fn(itypeinfo_ptr)
+      @ref_type_of_impl_type_fns ||= {}
+      @ref_type_of_impl_type_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetRefTypeOfImplType], [W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def get_names_fn(itypeinfo_ptr)
+      @get_names_fns ||= {}
+      @get_names_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetNames], [W::VOIDP, W::LONG, W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def get_ids_of_names_fn(itypeinfo_ptr)
+      @get_ids_of_names_fns ||= {}
+      @get_ids_of_names_fns[W.vtable_address(itypeinfo_ptr)] ||= W.vtable_function(
+        itypeinfo_ptr, ITYPEINFO_VTBL[:GetIDsOfNames], [W::VOIDP, W::VOIDP, W::DWORD, W::VOIDP], W::LONG
+      )
+    end
+
+    def type_info_of_guid_fn(itypelib_ptr)
+      @type_info_of_guid_fns ||= {}
+      @type_info_of_guid_fns[W.vtable_address(itypelib_ptr)] ||= W.vtable_function(
+        itypelib_ptr, ITYPELIB_VTBL[:GetTypeInfoOfGuid], [W::VOIDP, W::VOIDP, W::VOIDP], W::LONG
+      )
+    end
+
+    HKEY_CLASSES_ROOT = 0x80000000
+    KEY_READ = 0x20019
+    REG_SZ = 1
+    REG_EXPAND_SZ = 2
+
+    def advapi32
+      @advapi32 ||= Fiddle.dlopen('advapi32')
+    end
+
+    def reg_open_key_ex
+      @reg_open_key_ex ||= Fiddle::Function.new(
+        advapi32['RegOpenKeyExW'], [W::VOIDP, W::VOIDP, W::DWORD, W::DWORD, W::VOIDP], W::LONG, W::STDCALL
+      )
+    end
+
+    def reg_query_value_ex
+      @reg_query_value_ex ||= Fiddle::Function.new(
+        advapi32['RegQueryValueExW'],
+        [W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP], W::LONG, W::STDCALL
+      )
+    end
+
+    def reg_close_key
+      @reg_close_key ||= Fiddle::Function.new(advapi32['RegCloseKey'], [W::VOIDP], W::LONG, W::STDCALL)
+    end
+
+    REG_ENUM_MAX_NAME = 256 # WCHARs; a registry key name is capped at 255 chars (MAX_KEY_LENGTH)
+
+    def reg_enum_key_ex
+      @reg_enum_key_ex ||= Fiddle::Function.new(
+        advapi32['RegEnumKeyExW'],
+        [W::VOIDP, W::DWORD, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP], W::LONG, W::STDCALL
+      )
+    end
+
+    # Mirrors ext/win32ole/win32ole.c's reg_enum_key: returns the name of
+    # the index-th direct subkey of hkey, or nil once the index runs past
+    # the last one (RegEnumKeyExW returns ERROR_NO_MORE_ITEMS).
+    def reg_enum_key(hkey, index)
+      name_out = ("\x00" * (REG_ENUM_MAX_NAME * 2)).b
+      size_out = [REG_ENUM_MAX_NAME].pack('L')
+      err = reg_enum_key_ex.call(hkey, index, name_out, size_out, nil, nil, nil, nil)
+      return nil unless err.zero?
+
+      name_out[0, size_out.unpack1('L') * 2].force_encoding('UTF-16LE').encode('UTF-8')
+    end
+
+    REGKIND_NONE = 2
+
+    def load_type_lib_ex
+      @load_type_lib_ex ||= Fiddle::Function.new(
+        W.oleaut32['LoadTypeLibEx'], [W::VOIDP, W::LONG, W::VOIDP], W::LONG, W::STDCALL
+      )
+    end
+  end
+end

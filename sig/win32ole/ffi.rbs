@@ -1,0 +1,308 @@
+module Win32OLEFFI
+  VERSION: String
+end
+
+%a{deprecated: Use WIN32OLE::RuntimeError instead}
+WIN32OLERuntimeError: singleton(WIN32OLE::RuntimeError)
+
+%a{deprecated: Use WIN32OLE::QueryInterfaceError instead}
+WIN32OLEQueryInterfaceError: singleton(WIN32OLE::QueryInterfaceError)
+
+%a{deprecated: Use WIN32OLE::Type instead}
+WIN32OLE_TYPE: singleton(WIN32OLE::Type)
+
+%a{deprecated: Use WIN32OLE::TypeLib instead}
+WIN32OLE_TYPELIB: singleton(WIN32OLE::TypeLib)
+
+%a{deprecated: Use WIN32OLE::Method instead}
+WIN32OLE_METHOD: singleton(WIN32OLE::Method)
+
+%a{deprecated: Use WIN32OLE::Param instead}
+WIN32OLE_PARAM: singleton(WIN32OLE::Param)
+
+%a{deprecated: Use WIN32OLE::Variable instead}
+WIN32OLE_VARIABLE: singleton(WIN32OLE::Variable)
+
+%a{deprecated: Use WIN32OLE::Variant instead}
+WIN32OLE_VARIANT: singleton(WIN32OLE::Variant)
+
+%a{deprecated: Use WIN32OLE::Event instead}
+WIN32OLE_EVENT: singleton(WIN32OLE::Event)
+
+%a{deprecated: Use WIN32OLE::Record instead}
+WIN32OLE_RECORD: singleton(WIN32OLE::Record)
+
+class WIN32OLE
+  class RuntimeError < ::RuntimeError
+  end
+
+  class QueryInterfaceError < RuntimeError
+  end
+
+  LOCALE_SYSTEM_DEFAULT: Integer
+  LOCALE_USER_DEFAULT: Integer
+
+  CP_ACP: Integer
+  CP_OEMCP: Integer
+  CP_MACCP: Integer
+  CP_THREAD_ACP: Integer
+  CP_SYMBOL: Integer
+  CP_UTF7: Integer
+  CP_UTF8: Integer
+
+  def self.codepage: () -> Integer
+  def self.codepage=: (Integer cp) -> Integer
+  def self.locale: () -> Integer
+  def self.locale=: (Integer lcid) -> Integer
+  def self.ole_initialize: () -> nil
+  def self.ole_uninitialize: () -> nil
+  def self.ole_show_help: (String | Type | Method target, ?Integer? helpcontext) -> nil
+  def self.ole_reference_count: (WIN32OLE obj) -> Integer
+  def self.ole_free: (WIN32OLE obj) -> Integer
+  def self.connect: (string server, ?nil host) -> WIN32OLE
+  def self.create_guid: () -> String
+  def self.const_load: (WIN32OLE | String ole, ?Module? mod) -> nil
+
+  def initialize: (string server, ?string? host) -> void
+
+  def method_missing: (Symbol | string name, *untyped args) -> untyped
+  def invoke: (Symbol | string name, *untyped args) -> untyped
+  def _invoke: (Integer dispid, Array[untyped] args, Array[Integer] types) -> untyped
+  def _getproperty: (Integer dispid, Array[untyped] args, Array[Integer] types) -> untyped
+  def _setproperty: (Integer dispid, Array[untyped] args, Array[Integer] types) -> untyped
+  def setproperty: (Symbol | string name, *untyped args) -> nil
+  def each: () { (untyped) -> void } -> nil
+          | () -> Enumerator[untyped, nil]
+  def []: (*untyped args) -> untyped
+  def []=: (*untyped args) -> untyped
+  def ole_activex_initialize: () -> nil
+  def ole_free: () -> nil
+  def ole_type: () -> Type
+  alias ole_obj_help ole_type
+  def ole_typelib: () -> TypeLib
+  def ole_methods: () -> Array[Method]
+  def ole_get_methods: () -> Array[Method]
+  def ole_put_methods: () -> Array[Method]
+  def ole_func_methods: () -> Array[Method]
+  def ole_respond_to?: (Symbol | String name) -> bool
+  def ole_method: (string name) -> Method
+  alias ole_method_help ole_method
+  def ole_query_interface: (string iid) -> WIN32OLE
+  def methods: (*untyped args) -> Array[Symbol]
+
+  module VariantType
+    VT_EMPTY: Integer
+    VT_NULL: Integer
+    VT_I2: Integer
+    VT_I4: Integer
+    VT_R4: Integer
+    VT_R8: Integer
+    VT_CY: Integer
+    VT_DATE: Integer
+    VT_BSTR: Integer
+    VT_DISPATCH: Integer
+    VT_ERROR: Integer
+    VT_BOOL: Integer
+    VT_VARIANT: Integer
+    VT_UNKNOWN: Integer
+    VT_DECIMAL: Integer
+    VT_I1: Integer
+    VT_UI1: Integer
+    VT_UI2: Integer
+    VT_UI4: Integer
+    VT_I8: Integer
+    VT_UI8: Integer
+    VT_INT: Integer
+    VT_UINT: Integer
+    VT_VOID: Integer
+    VT_HRESULT: Integer
+    VT_PTR: Integer
+    VT_SAFEARRAY: Integer
+    VT_CARRAY: Integer
+    VT_USERDEFINED: Integer
+    VT_LPSTR: Integer
+    VT_LPWSTR: Integer
+    VT_RECORD: Integer
+    VT_INT_PTR: Integer
+    VT_UINT_PTR: Integer
+    VT_FILETIME: Integer
+    VT_BLOB: Integer
+    VT_STREAM: Integer
+    VT_STORAGE: Integer
+    VT_STREAMED_OBJECT: Integer
+    VT_STORED_OBJECT: Integer
+    VT_BLOB_OBJECT: Integer
+    VT_CF: Integer
+    VT_CLSID: Integer
+    VT_VERSIONED_STREAM: Integer
+    VT_BSTR_BLOB: Integer
+    VT_VECTOR: Integer
+    VT_ARRAY: Integer
+    VT_BYREF: Integer
+    VT_RESERVED: Integer
+    VT_ILLEGAL: Integer
+    VT_ILLEGALMASKED: Integer
+    VT_TYPEMASK: Integer
+  end
+
+  VARIANT: singleton(VariantType)
+
+  class Variant
+    Empty: Variant
+    Null: Variant
+    Nothing: Variant
+    NoParam: Variant
+
+    def self.array: (Array[Integer] dims, Integer vt) -> Variant
+
+    def initialize: (untyped val, ?Integer? vartype, ?untyped reserved) -> void
+    def value: () -> untyped
+    def value=: (untyped val) -> untyped
+    def vartype: () -> Integer
+    def []: (*Integer indices) -> untyped
+    def []=: (*untyped args) -> untyped
+  end
+
+  class Record
+    def initialize: (_ToS typename, WIN32OLE oleobj) -> void
+    def to_h: () -> Hash[String, untyped]
+    def typename: () -> String
+    def inspect: () -> String
+    def method_missing: (Symbol name, *untyped args) -> untyped
+    def ole_instance_variable_get: (String | Symbol name) -> untyped
+    def ole_instance_variable_set: (String | Symbol name, untyped val) -> untyped
+  end
+
+  class TypeLib
+    LIBFLAG_FRESTRICTED: Integer
+    LIBFLAG_FHIDDEN: Integer
+
+    def self.new: (string typelib, ?Integer? major, ?Integer? minor) -> TypeLib
+    def self.typelibs: () -> Array[TypeLib]
+
+    def guid: () -> String
+    def name: () -> String
+    alias to_s name
+    def version: () -> String
+    def major_version: () -> Integer
+    def minor_version: () -> Integer
+    def visible?: () -> bool
+    def library_name: () -> String
+    def path: () -> String?
+    def ole_types: () -> Array[Type]
+    alias ole_classes ole_types
+    def inspect: () -> String
+  end
+
+  class Type
+    TYPEFLAG_FHIDDEN: Integer
+    TYPEFLAG_FRESTRICTED: Integer
+    TKIND_ALIAS: Integer
+
+    def self.new: (string typelib, string ole_class) -> Type
+    def self.ole_classes: (string typelib) -> Array[Type]
+    def self.typelibs: () -> Array[String]
+    def self.progids: () -> Array[String]
+
+    def name: () -> String
+    alias to_s name
+    def ole_type: () -> String?
+    def guid: () -> String
+    def progid: () -> String?
+    def visible?: () -> bool
+    def major_version: () -> Integer
+    def minor_version: () -> Integer
+    def typekind: () -> Integer
+    def helpstring: () -> String?
+    def helpfile: () -> String?
+    def helpcontext: () -> Integer
+    def src_type: () -> String?
+    def variables: () -> Array[Variable]
+    def ole_methods: () -> Array[Method]
+    def ole_typelib: () -> TypeLib
+    def inspect: () -> String
+    def implemented_ole_types: () -> Array[Type]
+    def source_ole_types: () -> Array[Type]
+    def default_event_sources: () -> Array[Type]
+    def default_ole_types: () -> Array[Type]
+  end
+
+  class Method
+    FUNCFLAG_FRESTRICTED: Integer
+    FUNCFLAG_FHIDDEN: Integer
+    FUNCFLAG_FNONBROWSABLE: Integer
+
+    def self.new: (Type oletype, string method) -> Method
+
+    def name: () -> String
+    alias to_s name
+    def return_type: () -> String
+    def return_vtype: () -> Integer
+    def return_type_detail: () -> Array[String]
+    def invoke_kind: () -> String
+    def invkind: () -> Integer
+    def visible?: () -> bool
+    def dispid: () -> Integer
+    def helpstring: () -> String?
+    def helpfile: () -> String?
+    def helpcontext: () -> Integer
+    def offset_vtbl: () -> Integer
+    def size_params: () -> Integer
+    def size_opt_params: () -> Integer
+    def params: () -> Array[Param]
+    def inspect: () -> String
+    def event?: () -> bool
+    def event_interface: () -> String?
+  end
+
+  class Param
+    PARAMFLAG_FIN: Integer
+    PARAMFLAG_FOUT: Integer
+    PARAMFLAG_FRETVAL: Integer
+    PARAMFLAG_FOPT: Integer
+    PARAMFLAG_FHASDEFAULT: Integer
+    PARAMDESCEX_DEFAULT_VALUE_OFFSET: Integer
+
+    def self.new: (Method olemethod, Integer n) -> Param
+
+    def name: () -> String
+    alias to_s name
+    def ole_type: () -> String
+    def ole_type_detail: () -> Array[String]
+    def input?: () -> bool
+    def output?: () -> bool
+    def optional?: () -> bool
+    def retval?: () -> bool
+    def default: () -> untyped
+    def inspect: () -> String
+  end
+
+  class Variable
+    VARFLAG_FRESTRICTED: Integer
+    VARFLAG_FHIDDEN: Integer
+    VARFLAG_FNONBROWSABLE: Integer
+    VAR_CONST: Integer
+
+    def name: () -> String
+    alias to_s name
+    def ole_type: () -> String
+    def ole_type_detail: () -> Array[String]
+    def value: () -> untyped
+    def visible?: () -> bool
+    def variable_kind: () -> String
+    def varkind: () -> Integer
+    def inspect: () -> String
+  end
+
+  class Event
+    def self.message_loop: () -> nil
+
+    def initialize: (WIN32OLE ole, ?String? itf) -> void
+    def on_event: (?(String | Symbol)? event) { (*untyped) -> untyped } -> nil
+    def on_event_with_outargs: (?(String | Symbol)? event) { (*untyped) -> untyped } -> nil
+    def off_event: (?(String | Symbol)? event) -> nil
+    def handler=: (untyped obj) -> untyped
+    def handler: () -> untyped
+    def unadvise: () -> nil
+  end
+end

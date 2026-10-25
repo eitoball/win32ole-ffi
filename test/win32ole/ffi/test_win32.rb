@@ -1,0 +1,399 @@
+# frozen_string_literal: true
+
+require 'test/unit'
+
+require 'win32ole/ffi/win32'
+
+class TestWin32 < Test::Unit::TestCase
+  W = WIN32OLE::Win32
+
+  def test_stdcall_falls_back_to_default_when_undefined
+    expected = Fiddle::Function.const_defined?(:STDCALL) ? Fiddle::Function::STDCALL : Fiddle::Function::DEFAULT
+    assert_equal(expected, W::STDCALL)
+  end
+
+  def test_variant_size_is_24_on_64bit_16_on_32bit
+    expected = Fiddle::SIZEOF_VOIDP == 8 ? 24 : 16
+    assert_equal(expected, W::VARIANT_SIZE)
+  end
+
+  def test_wstr_is_utf16le_nul_terminated_binary
+    bytes = W.wstr('AB')
+    assert_equal(Encoding::ASCII_8BIT, bytes.encoding)
+    assert_equal("A\x00B\x00\x00\x00".b, bytes)
+  end
+
+  def test_pack_variant_round_trips_with_i4_payload
+    packed = W.pack_variant(W::VT_I4, W.pack_i4(42))
+    assert_equal(W::VARIANT_SIZE, packed.bytesize)
+    vt, payload = W.unpack_variant(packed)
+    assert_equal(W::VT_I4, vt)
+    assert_equal(42, W.unpack_i4(payload))
+  end
+
+  def test_pack_variant_rejects_oversized_payload
+    # After generalization, only reject payloads that exceed VARIANT_SIZE - 8
+    assert_raise(ArgumentError) { W.pack_variant(W::VT_I4, "\x00".b * (W::VARIANT_SIZE - 7)) }
+  end
+
+  def test_i8_round_trip
+    big = 5_000_000_000
+    assert_equal(big, W.unpack_i8(W.pack_i8(big)))
+  end
+
+  def test_r8_round_trip
+    assert_in_delta(3.5, W.unpack_r8(W.pack_r8(3.5)), 0.0001)
+  end
+
+  def test_bool_round_trip
+    assert_equal(true, W.unpack_bool(W.pack_bool(true)))
+    assert_equal(false, W.unpack_bool(W.pack_bool(false)))
+  end
+
+  def test_pointer_round_trip
+    addr = 0x00007ff6_12345678
+    assert_equal(addr, W.unpack_pointer(W.pack_pointer(addr)))
+  end
+
+  def test_iid_idispatch_matches_known_bytes
+    expected = [0x00020400, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46].pack('LSSC8')
+    assert_equal(expected, W::IID_IDISPATCH)
+  end
+
+  def test_ruby_to_variant_type_mapping
+    assert_equal(:bstr, W.ruby_to_variant_type('x'))
+    assert_equal(:i4, W.ruby_to_variant_type(42))
+    assert_equal(:i8, W.ruby_to_variant_type(5_000_000_000))
+    assert_equal(:i4, W.ruby_to_variant_type(-(2**31)))
+    assert_equal(:i8, W.ruby_to_variant_type(-(2**31) - 1))
+    assert_equal(:r8, W.ruby_to_variant_type(1.5))
+    assert_equal(:bool, W.ruby_to_variant_type(true))
+    assert_equal(:bool, W.ruby_to_variant_type(false))
+    assert_equal(:empty, W.ruby_to_variant_type(nil))
+  end
+
+  def test_ruby_to_variant_type_rejects_unsupported
+    assert_raise(TypeError) { W.ruby_to_variant_type([1, 2]) }
+    assert_raise(TypeError) { W.ruby_to_variant_type({}) }
+  end
+
+  def test_variant_ruby_type_mapping
+    assert_equal(:i4, W.variant_ruby_type(W::VT_I4))
+    assert_equal(:bstr, W.variant_ruby_type(W::VT_BSTR))
+    assert_equal(:dispatch, W.variant_ruby_type(W::VT_DISPATCH))
+    assert_equal(:dispatch, W.variant_ruby_type(W::VT_UNKNOWN))
+  end
+
+  # ole_variant2val renders any type it has no case for (VT_CY, VT_DECIMAL,
+  # ...) through VariantChangeTypeEx(VT_BSTR).
+  def test_variant_ruby_type_falls_back_to_bstr_conversion_for_other_vartypes
+    assert_equal(:other, W.variant_ruby_type(W::VT_CY))
+    assert_equal(:other, W.variant_ruby_type(99))
+  end
+
+  def test_variant_ruby_type_maps_null_and_date
+    assert_equal(:empty, W.variant_ruby_type(W::VT_NULL))
+    assert_equal(:date, W.variant_ruby_type(W::VT_DATE))
+  end
+
+  def test_variant_ruby_type_covers_all_scalar_vartypes_phase3_added
+    assert_equal(:i1, W.variant_ruby_type(W::VT_I1))
+    assert_equal(:ui1, W.variant_ruby_type(W::VT_UI1))
+    assert_equal(:i2, W.variant_ruby_type(W::VT_I2))
+    assert_equal(:ui2, W.variant_ruby_type(W::VT_UI2))
+    assert_equal(:ui4, W.variant_ruby_type(W::VT_UI4))
+    assert_equal(:ui8, W.variant_ruby_type(W::VT_UI8))
+    assert_equal(:int, W.variant_ruby_type(W::VT_INT))
+    assert_equal(:uint, W.variant_ruby_type(W::VT_UINT))
+    assert_equal(:r4, W.variant_ruby_type(W::VT_R4))
+    assert_equal(:error, W.variant_ruby_type(W::VT_ERROR))
+  end
+
+  def test_dispatch_plan_zero_args_uses_method_or_propertyget
+    plan = W.dispatch_plan('Count', [])
+    assert_equal('Count', plan[:name])
+    assert_equal(W::DISPATCH_METHOD | W::DISPATCH_PROPERTYGET, plan[:wflags])
+    assert_equal(false, plan[:named_put])
+  end
+
+  # ole_propertyput: PROPERTYPUT|PROPERTYPUTREF, so a property that only
+  # takes an object by reference (SpVoice#Voice) can be set too.
+  def test_dispatch_plan_setter_uses_propertyput_and_propertyputref
+    plan = W.dispatch_plan('compareMode=', [1])
+    assert_equal('compareMode', plan[:name])
+    assert_equal(W::DISPATCH_PROPERTYPUT | W::DISPATCH_PROPERTYPUTREF, plan[:wflags])
+    assert_equal(true, plan[:named_put])
+  end
+
+  def test_dispatch_plan_setter_requires_exactly_one_arg
+    assert_raise(ArgumentError) { W.dispatch_plan('compareMode=', [1, 2]) }
+  end
+
+  def test_dispatch_plan_with_args_uses_method_and_propertyget
+    plan = W.dispatch_plan('Add', ['k', 'v'])
+    assert_equal(W::DISPATCH_METHOD | W::DISPATCH_PROPERTYGET, plan[:wflags])
+    assert_equal(false, plan[:named_put])
+  end
+
+  def test_failed_predicate
+    assert_equal(false, W.failed?(0))
+    assert_equal(true, W.failed?(-2147024809)) # E_INVALIDARG
+  end
+
+  def test_hr_hex_formats_unsigned
+    assert_equal('0x800401f3', W.hr_hex(-2147221005))
+  end
+
+  def test_method_error_message_matches_existing_c_ext_format
+    msg = W.method_error_message('add', 'boom')
+    assert_match(/\A\(in OLE method `add': \)boom\z/, msg) #`
+  end
+
+  def test_property_put_error_message_matches_existing_c_ext_format
+    msg = W.property_put_error_message('compareMode', 'boom')
+    assert_match(/\A\(in setting property `compareMode': \)boom\z/, msg) #`
+  end
+
+  def test_unknown_server_error_message_matches_existing_c_ext_format
+    assert_equal("unknown OLE server: `NonExistProgID'", W.unknown_server_error_message('NonExistProgID')) #`
+  end
+
+  def test_parse_excepinfo_reads_known_offsets
+    o = W::EXCEPINFO_OFFSETS
+    buf = ("\x00" * W::EXCEPINFO_SIZE).b
+    buf[o[:wCode], 2] = [7].pack('S')
+    buf[o[:bstrDescription], W::PTR_SIZE] = [0x1234].pack(W::PTR_SIZE == 8 ? 'Q' : 'L')
+    buf[o[:scode], 4] = [-2147024809].pack('l')
+
+    info = W.parse_excepinfo(buf)
+    assert_equal(7, info[:w_code])
+    assert_equal(0x1234, info[:bstr_description_ptr])
+    assert_equal(-2147024809, info[:scode])
+  end
+
+  def test_vtable_function_rejects_small_integer_addresses
+    # A real crash was found via CI: passing a small-but-valid Integer (not
+    # a real pointer) through to the first native dereference caused a JVM
+    # EXCEPTION_ACCESS_VIOLATION rather than a catchable Ruby exception.
+    err = assert_raise(TypeError) { W.vtable_function(100, 2, [], Fiddle::TYPE_VOID) }
+    assert_match(/100/, err.message)
+  end
+
+  def test_vtable_function_rejects_non_integer_addresses
+    assert_raise(TypeError) { W.vtable_function('not a pointer', 2, [], Fiddle::TYPE_VOID) }
+    assert_raise(TypeError) { W.vtable_function(nil, 2, [], Fiddle::TYPE_VOID) }
+  end
+
+  def test_vtable_address_shares_the_same_guard
+    assert_raise(TypeError) { W.vtable_address(1) }
+  end
+
+  def test_vtable_address_reads_the_first_pointer_sized_field
+    fake_vtable_addr = 0x123456
+    object_buf = [fake_vtable_addr].pack(W::PACK_PTR)
+    object_ptr = Fiddle::Pointer.to_ptr(object_buf)
+    assert_equal(fake_vtable_addr, W.vtable_address(object_ptr.to_i))
+  end
+
+  def test_pack_variant_accepts_a_variable_length_body
+    bytes = W.pack_variant(W::VT_RECORD, "\x01\x02")
+    assert_equal(W::VARIANT_SIZE, bytes.bytesize)
+  end
+
+  def test_pack_variant_zero_pads_a_short_body
+    bytes = W.pack_variant(W::VT_I4, W.pack_i4(7))
+    assert_equal("\x00".b * (W::VARIANT_SIZE - 12), bytes[12, W::VARIANT_SIZE - 12])
+  end
+
+  def test_pack_variant_rejects_a_body_longer_than_the_slot
+    assert_raise(ArgumentError) { W.pack_variant(W::VT_I4, "\x00".b * (W::VARIANT_SIZE - 7)) }
+  end
+
+  def test_unpack_variant_reads_the_requested_body_size
+    body = [1, 2].pack(W::PACK_PTR * 2)
+    bytes = W.pack_variant(W::VT_RECORD, body)
+    vt, read_body = W.unpack_variant(bytes, body_size: body.bytesize)
+    assert_equal(W::VT_RECORD, vt)
+    assert_equal(body, read_body)
+  end
+
+  def test_unpack_variant_default_body_size_is_unchanged
+    bytes = W.pack_variant(W::VT_I4, W.pack_i4(42))
+    vt, payload = W.unpack_variant(bytes)
+    assert_equal(W::VT_I4, vt)
+    assert_equal(42, W.unpack_i4(payload))
+  end
+
+  def test_scalar_family_round_trips
+    assert_equal(-5, W.unpack_i1(W.pack_i1(-5)))
+    assert_equal(200, W.unpack_ui1(W.pack_ui1(200)))
+    assert_equal(-1000, W.unpack_i2(W.pack_i2(-1000)))
+    assert_equal(40_000, W.unpack_ui2(W.pack_ui2(40_000)))
+    assert_equal(4_000_000_000, W.unpack_ui4(W.pack_ui4(4_000_000_000)))
+    assert_equal(-7, W.unpack_int(W.pack_int(-7)))
+    assert_equal(7, W.unpack_uint(W.pack_uint(7)))
+    assert_equal(18_000_000_000, W.unpack_ui8(W.pack_ui8(18_000_000_000)))
+    assert_in_delta(1.5, W.unpack_r4(W.pack_r4(1.5)), 0.0001)
+    assert_equal(-2_147_024_809, W.unpack_error(W.pack_error(-2_147_024_809)))
+  end
+
+  def test_scalar_family_payloads_are_eight_bytes_zero_padded
+    assert_equal(8, W.pack_i1(1).bytesize)
+    assert_equal(8, W.pack_ui8(1).bytesize) # the one already-8-byte-wide case: no padding needed
+    assert_equal("\x00".b * 7, W.pack_i1(1)[1, 7])
+  end
+
+  def test_new_vt_constants_do_not_collide_with_existing_ones
+    existing = [W::VT_EMPTY, W::VT_I4, W::VT_R8, W::VT_BSTR, W::VT_DISPATCH, W::VT_BOOL, W::VT_UNKNOWN, W::VT_I8]
+    new_scalars = [W::VT_NULL, W::VT_I2, W::VT_R4, W::VT_ERROR, W::VT_VARIANT,
+                   W::VT_I1, W::VT_UI1, W::VT_UI2, W::VT_UI4, W::VT_UI8, W::VT_INT, W::VT_UINT, W::VT_RECORD]
+    assert_empty(existing & new_scalars)
+    assert_equal(0x2000, W::VT_ARRAY)
+    assert_equal(0x4000, W::VT_BYREF)
+  end
+
+  def test_pack_byref_scalar_points_into_the_body_offset_of_realvar
+    realvar_bytes = W.pack_variant(W::VT_I4, W.pack_i4(42))
+    realvar_ptr = W.persistent_pointer_for(realvar_bytes)
+    byref = W.pack_byref(W::VT_I4, realvar_ptr)
+    vt, payload = W.unpack_variant(byref)
+    assert_equal(W::VT_I4 | W::VT_BYREF, vt)
+    ptr_value = W.unpack_pointer(payload)
+    assert_equal(realvar_ptr.to_i + 8, ptr_value)
+  end
+
+  def test_pack_byref_variant_points_at_the_whole_realvar_buffer
+    realvar_bytes = W.pack_variant(W::VT_I4, W.pack_i4(42))
+    realvar_ptr = W.persistent_pointer_for(realvar_bytes)
+    byref = W.pack_byref(W::VT_VARIANT, realvar_ptr)
+    _vt, payload = W.unpack_variant(byref)
+    ptr_value = W.unpack_pointer(payload)
+    assert_equal(realvar_ptr.to_i, ptr_value)
+  end
+
+  def test_persistent_pointer_for_copies_the_given_bytes
+    bytes = W.pack_i4(42)
+    ptr = W.persistent_pointer_for(bytes)
+    assert_equal(bytes, ptr[0, bytes.bytesize])
+  end
+
+  def test_persistent_pointer_for_write_back_is_visible_through_the_same_pointer_object
+    bytes = W.pack_i4(42)
+    ptr = W.persistent_pointer_for(bytes)
+    Fiddle::Pointer.new(ptr.to_i)[0, 4] = [99].pack('l')
+    assert_equal(99, W.unpack_i4(ptr[0, 4]))
+  end
+
+  def test_new_iid_constants_are_16_bytes
+    [W::IID_IUNKNOWN, W::IID_ICONNECTIONPOINTCONTAINER, W::IID_IPROVIDECLASSINFO, W::IID_IPROVIDECLASSINFO2].each do |iid|
+      assert_equal(16, iid.bytesize)
+    end
+  end
+
+  def test_iid_iunknown_matches_known_bytes
+    # {00000000-0000-0000-C000-000000000046}
+    expected = [0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46].pack('LSSC8')
+    assert_equal(expected, W::IID_IUNKNOWN)
+  end
+
+  def test_new_iid_constants_are_pairwise_distinct
+    iids = [W::IID_IUNKNOWN, W::IID_ICONNECTIONPOINTCONTAINER, W::IID_IPROVIDECLASSINFO, W::IID_IPROVIDECLASSINFO2, W::IID_IDISPATCH]
+    assert_equal(iids.size, iids.uniq.size)
+  end
+
+  def test_query_interface_reads_hr_and_returns_nil_on_failure
+    # Fake object: first pointer-sized field is a vtable whose slot 0
+    # (QueryInterface) is a closure that always fails. No live COM needed --
+    # this is the same "malloc a fake vtable" technique test_win32.rb already
+    # uses for test_vtable_address_reads_the_first_pointer_sized_field.
+    qi = Fiddle::Closure::BlockCaller.new(W::LONG, [W::VOIDP, W::VOIDP, W::VOIDP], W::STDCALL) do |_this, _riid, ppv|
+      ppv[0, W::PTR_SIZE] = [0].pack(W::PACK_PTR)
+      -2147467262 # E_NOINTERFACE
+    end
+    vtable = Fiddle::Pointer.malloc(W::PTR_SIZE)
+    vtable[0, W::PTR_SIZE] = [qi.to_i].pack(W::PACK_PTR)
+    obj = Fiddle::Pointer.malloc(W::PTR_SIZE)
+    obj[0, W::PTR_SIZE] = [vtable.to_i].pack(W::PACK_PTR)
+
+    assert_nil(W.query_interface(obj.to_i, ("\x00" * 16).b))
+  ensure
+    Fiddle.free(vtable) if vtable
+    Fiddle.free(obj) if obj
+  end
+
+  def test_query_interface_returns_the_ppv_pointer_on_success
+    qi = Fiddle::Closure::BlockCaller.new(W::LONG, [W::VOIDP, W::VOIDP, W::VOIDP], W::STDCALL) do |_this, _riid, ppv|
+      ppv[0, W::PTR_SIZE] = [0x123456].pack(W::PACK_PTR)
+      0
+    end
+    vtable = Fiddle::Pointer.malloc(W::PTR_SIZE)
+    vtable[0, W::PTR_SIZE] = [qi.to_i].pack(W::PACK_PTR)
+    obj = Fiddle::Pointer.malloc(W::PTR_SIZE)
+    obj[0, W::PTR_SIZE] = [vtable.to_i].pack(W::PACK_PTR)
+
+    assert_equal(0x123456, W.query_interface(obj.to_i, ("\x00" * 16).b))
+  ensure
+    Fiddle.free(vtable) if vtable
+    Fiddle.free(obj) if obj
+  end
+
+  def test_pm_remove_matches_win32_constant
+    assert_equal(0x0001, W::PM_REMOVE)
+  end
+
+  def test_msg_size_is_large_enough_for_a_real_msg_struct
+    # Real MSG is 48 bytes on x64 / 28 on x86 (HWND hwnd; UINT message; WPARAM
+    # wParam; LPARAM lParam; DWORD time; POINT pt). We never read MSG's own
+    # fields (just pass the pointer PeekMessage filled in on to
+    # TranslateMessage/DispatchMessage), so exact layout doesn't matter --
+    # only that the scratch buffer is big enough for the OS to write into
+    # without corrupting adjacent memory.
+    minimum = W::PTR_SIZE == 8 ? 48 : 28
+    assert_operator(W::MSG_SIZE, :>=, minimum)
+  end
+
+  def test_encoding_to_codepage_follows_ext_win32ole_table
+    assert_equal(65001, W.encoding_to_codepage(Encoding::UTF_8))
+    assert_equal(932, W.encoding_to_codepage(Encoding::Windows_31J))
+    assert_equal(51932, W.encoding_to_codepage(Encoding::CP51932))
+    assert_equal(W::CP_ACP, W.encoding_to_codepage(Encoding::US_ASCII)) # not in the table
+  end
+
+  def with_codepage(cp)
+    saved = W.codepage
+    W.codepage = cp
+    yield
+  ensure
+    W.codepage = saved
+  end
+
+  def test_utf16_to_s_tags_the_result_with_the_codepage_encoding
+    utf16 = "あ".encode('UTF-16LE').b
+    with_codepage(W::CP_UTF8) do
+      assert_equal("\xE3\x81\x82".dup.force_encoding('UTF-8'), W.utf16_to_s(utf16))
+    end
+    with_codepage(51932) do
+      assert_equal("\xA4\xA2".dup.force_encoding('CP51932'), W.utf16_to_s(utf16))
+    end
+  end
+
+  def test_codepage_rejects_a_non_integer
+    assert_raise(TypeError) { W.codepage = '65001' }
+  end
+
+  # A BSTR's length prefix can include a terminating NUL (typelib help
+  # file names do); ole_wc2vstr's strlen stops at the first NUL.
+  def test_bstr_to_s_stops_at_the_first_nul
+    body = "AB\u0000C".encode('UTF-16LE').b
+    buf = Fiddle::Pointer.malloc(4 + body.bytesize)
+    buf[0, 4] = [body.bytesize].pack('L')
+    buf[4, body.bytesize] = body
+    assert_equal('AB', W.bstr_to_s(buf.to_i + 4))
+  ensure
+    Fiddle.free(buf) if buf
+  end
+
+  def test_wstr_appends_a_terminating_nul
+    assert_equal("a\x00\x00\x00".b, W.wstr('a'))
+  end
+end

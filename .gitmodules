@@ -1,0 +1,3 @@
+[submodule "vendor/win32ole"]
+	path = vendor/win32ole
+	url = https://github.com/ruby/win32ole

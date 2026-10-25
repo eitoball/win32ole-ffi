@@ -1,0 +1,22 @@
+diff --git a/test/win32ole/available_ole.rb b/test/win32ole/available_ole.rb
+index af397e0..f1f679d 100644
+--- a/test/win32ole/available_ole.rb
++++ b/test/win32ole/available_ole.rb
+@@ -10,7 +10,7 @@ if defined?(WIN32OLE)
+     def sysmon_available?
+       WIN32OLE::Type.new('System Monitor Control', 'SystemMonitor')
+       true
+-    rescue
++    rescue StandardError, NotImplementedError
+       false
+     end
+ 
+@@ -23,6 +23,8 @@ if defined?(WIN32OLE)
+ 
+     def msxml_available?
+       !WIN32OLE::TypeLib.typelibs.find { |t| t.name.start_with?('Microsoft XML') }.nil?
++    rescue StandardError, NotImplementedError
++      false
+     end
+ 
+     def event_param

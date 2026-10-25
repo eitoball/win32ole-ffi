@@ -1,0 +1,289 @@
+# frozen_string_literal: true
+
+require 'test/unit'
+
+require 'win32ole/ffi'
+
+# WIN32OLE.connect falls back to moniker binding (ole_bind_obj) when the
+# name is neither a ProgID nor a CLSID -- e.g. "winmgmts:". The ole32 entry
+# points are stubbed; the bind context and moniker are fake COM objects.
+class TestConnectMoniker < Test::Unit::TestCase
+  W = WIN32OLE::Win32
+  CO_E_CLASSSTRING = -2147221005
+
+  class FakeFn
+    def initialize(&body)
+      @body = body
+    end
+
+    def call(*args)
+      @body.call(*args)
+    end
+  end
+
+  def fake_object(slots)
+    vtable = Fiddle::Pointer.malloc(W::PTR_SIZE * 9)
+    9.times { |i| vtable[i * W::PTR_SIZE, W::PTR_SIZE] = [0].pack(W::PACK_PTR) }
+    slots.each do |index, (args, ret, body)|
+      closure = Fiddle::Closure::BlockCaller.new(ret, args, W::STDCALL, &body)
+      @keep << closure
+      vtable[index * W::PTR_SIZE, W::PTR_SIZE] = [closure.to_i].pack(W::PACK_PTR)
+    end
+    obj = Fiddle::Pointer.malloc(W::PTR_SIZE)
+    obj[0, W::PTR_SIZE] = [vtable.to_i].pack(W::PACK_PTR)
+    @mem.push(obj, vtable)
+    obj.to_i
+  end
+
+  def stub(name, value)
+    @originals[name] = W.method(name)
+    W.define_singleton_method(name) { value }
+  end
+
+  def setup
+    @ole_initialized = Thread.current.thread_variable_get(:win32ole_ole_initialized)
+    @keep = []
+    @mem = []
+    @originals = {}
+    @released = []
+    @bound = nil
+    released = @released
+    release = [[W::VOIDP], W::DWORD, proc { |this| released << this.to_i; 0 }]
+    @bindctx = fake_object(2 => release)
+    @dispatch = 0x12345678
+    dispatch = @dispatch
+    bound = []
+    @bound = bound
+    @moniker = fake_object(
+      2 => release,
+      8 => [[W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP, W::VOIDP], W::LONG, proc do |_this, pbc, _left, riid, ppv|
+        bound << [pbc.to_i, riid[0, 16]]
+        ppv[0, W::PTR_SIZE] = [dispatch].pack(W::PACK_PTR)
+        0
+      end]
+    )
+    bindctx = @bindctx
+    moniker = @moniker
+    @parsed = []
+    parsed = @parsed
+    stub(:ole_initialize_fn, FakeFn.new { |_| 0 })
+    stub(:clsid_from_progid, FakeFn.new { |*| CO_E_CLASSSTRING })
+    stub(:clsid_from_string, FakeFn.new { |*| CO_E_CLASSSTRING })
+    stub(:create_bind_ctx, FakeFn.new { |_reserved, out| out[0, W::PTR_SIZE] = [bindctx].pack(W::PACK_PTR); 0 })
+    stub(:mk_parse_display_name, FakeFn.new do |pbc, name, _eaten, out|
+      parsed << [pbc, W.wstr_to_s(Fiddle::Pointer.to_ptr(name).to_i)]
+      out[0, W::PTR_SIZE] = [moniker].pack(W::PACK_PTR)
+      0
+    end)
+  end
+
+  # The stubbed OleInitialize must not leave the thread marked as
+  # initialized for the real COM tests that run after this one.
+  def teardown
+    @originals.each { |name, m| W.define_singleton_method(name, m) }
+    @mem.each { |p| Fiddle.free(p) }
+    Thread.current.thread_variable_set(:win32ole_ole_initialized, @ole_initialized)
+  end
+
+  def test_an_unresolvable_name_is_bound_as_a_moniker
+    obj = WIN32OLE.allocate
+    original = WIN32OLE.method(:wrap_dispatch_pointer)
+    WIN32OLE.define_singleton_method(:wrap_dispatch_pointer) { |ptr| obj.instance_variable_set(:@ptr, ptr); obj }
+    begin
+      assert_same(obj, WIN32OLE.connect('winmgmts:'))
+    ensure
+      # restore, not remove_method: the stub replaced the real method
+      WIN32OLE.define_singleton_method(:wrap_dispatch_pointer, original)
+    end
+
+    assert_equal(@dispatch, obj.instance_variable_get(:@ptr))
+    assert_equal([[@bindctx, 'winmgmts:']], @parsed)
+    assert_equal([[@bindctx, W::IID_IDISPATCH]], @bound)
+    assert_equal([@moniker, @bindctx], @released) # both released, the IDispatch kept
+  end
+end
+
+# ole_initialize / ole_uninitialize: OleInitialize once per thread (COM
+# initialization is per OS thread), undone by OleUninitialize.
+class TestOleInitialize < Test::Unit::TestCase
+  W = WIN32OLE::Win32
+
+  def setup
+    @calls = []
+    calls = @calls
+    @originals = %i[ole_initialize_fn ole_uninitialize_fn hresult_system_message].to_h { |name| [name, W.method(name)] }
+    W.define_singleton_method(:hresult_system_message) { |_hr| '' } # FormatMessage
+    @init_hr = 0
+    test = self
+    W.define_singleton_method(:ole_initialize_fn) { TestConnectMoniker::FakeFn.new { |_| calls << :init; test.init_hr } }
+    W.define_singleton_method(:ole_uninitialize_fn) { TestConnectMoniker::FakeFn.new { calls << :uninit; nil } }
+    @ole_initialized = Thread.current.thread_variable_get(:win32ole_ole_initialized)
+    Thread.current.thread_variable_set(:win32ole_ole_initialized, nil)
+  end
+
+  attr_reader :init_hr
+
+  def teardown
+    @originals.each { |name, m| W.define_singleton_method(name, m) }
+    Thread.current.thread_variable_set(:win32ole_ole_initialized, @ole_initialized)
+  end
+
+  def test_initializes_once_per_thread_and_uninitializes
+    WIN32OLE.ole_initialize
+    WIN32OLE.ole_initialize
+    Thread.new { WIN32OLE.ole_initialize }.join
+    WIN32OLE.ole_uninitialize
+    WIN32OLE.ole_uninitialize
+    assert_equal(%i[init init uninit], @calls)
+  end
+
+  def test_a_failed_initialize_raises
+    @init_hr = -2147417850 # RPC_E_CHANGED_MODE
+    assert_raise(RuntimeError) { WIN32OLE.ole_initialize }
+  end
+end
+
+# fole_s_show_help: open a help file (String) or a Type/Method's own help
+# file at its help context, via HtmlHelp.
+class TestOleShowHelp < Test::Unit::TestCase
+  W = WIN32OLE::Win32
+  HelpTarget = Struct.new(:helpfile, :helpcontext, :name)
+
+  def setup
+    @opened = []
+    opened = @opened
+    @hwnd = 0x100
+    test = self
+    @original = W.method(:show_html_help)
+    W.define_singleton_method(:show_html_help) { |file, context| opened << [file, context]; test.hwnd }
+  end
+
+  attr_reader :hwnd
+
+  def teardown
+    W.define_singleton_method(:show_html_help, @original)
+  end
+
+  def type_target(helpfile)
+    target = WIN32OLE::Type.allocate
+    target.instance_variable_set(:@helpfile, helpfile)
+    target.instance_variable_set(:@help_context, 42)
+    target.instance_variable_set(:@name, 'Folder')
+    target
+  end
+
+  def test_a_type_opens_its_own_help_file_at_its_context
+    assert_nil(WIN32OLE.ole_show_help(type_target('C:\x.chm')))
+    assert_equal([['C:\x.chm', 42]], @opened)
+  end
+
+  def test_a_string_is_the_help_file
+    WIN32OLE.ole_show_help('C:\y.chm', 7)
+    assert_equal([['C:\y.chm', 7]], @opened)
+  end
+
+  def test_a_type_without_a_help_file_is_an_error
+    err = assert_raise(RuntimeError) { WIN32OLE.ole_show_help(type_target('')) }
+    assert_match(/no helpfile of `Folder'/, err.message)
+  end
+
+  def test_anything_else_is_a_type_error
+    assert_raise(TypeError) { WIN32OLE.ole_show_help(1) }
+  end
+
+  def test_a_failed_open_is_an_error
+    @hwnd = 0
+    assert_raise(RuntimeError) { WIN32OLE.ole_show_help('C:\z.chm', 1) }
+  end
+end
+
+# ole_create_dcom: WIN32OLE.new(server, host) resolves the CLSID locally,
+# then from the host's registry, then as a CLSID string, and creates the
+# object with CoCreateInstanceEx on that host.
+class TestNewDcom < Test::Unit::TestCase
+  W = WIN32OLE::Win32
+  FakeFn = TestConnectMoniker::FakeFn
+  CLSID = (1..16).to_a.pack('C*')
+
+  def setup
+    @ole_initialized = Thread.current.thread_variable_get(:win32ole_ole_initialized)
+    @originals = {}
+    @keep = []
+    @mem = []
+    @created = []
+    created = @created
+    @dispatch = fake_dispatch
+    dispatch = @dispatch
+    @create_hr = 0
+    test = self
+    stub(:ole_initialize_fn, FakeFn.new { |_| 0 })
+    stub(:hresult_system_message, nil) { |_hr| '' } # FormatMessage
+    stub(:clsid_from_progid, FakeFn.new { |*| TestConnectMoniker::CO_E_CLASSSTRING })
+    stub(:clsid_from_string, FakeFn.new { |*| TestConnectMoniker::CO_E_CLASSSTRING })
+    stub(:co_create_instance_ex, FakeFn.new do |clsid, outer, clsctx, info, count, mqi|
+      # Fiddle passes these Strings as pointers to their buffers.
+      created << {
+        clsid: clsid[0, 16], outer: outer, clsctx: clsctx, count: count,
+        host: W.wstr_to_s(info[W::PTR_SIZE, W::PTR_SIZE].unpack1(W::PACK_PTR)),
+        iid: Fiddle::Pointer.new(mqi[0, W::PTR_SIZE].unpack1(W::PACK_PTR))[0, 16]
+      }
+      mqi[W::PTR_SIZE, W::PTR_SIZE] = [dispatch].pack(W::PACK_PTR)
+      test.create_hr
+    end)
+    @remote = nil
+    stub(:clsid_from_remote, nil) { |host, server| test.remote&.call(host, server) }
+  end
+
+  attr_reader :create_hr, :remote
+
+  def teardown
+    @originals.each { |name, m| W.define_singleton_method(name, m) }
+    @mem.each { |p| Fiddle.free(p) }
+    Thread.current.thread_variable_set(:win32ole_ole_initialized, @ole_initialized)
+  end
+
+  def stub(name, value, &body)
+    @originals[name] = W.method(name)
+    body ? W.define_singleton_method(name, &body) : W.define_singleton_method(name) { value }
+  end
+
+  def fake_dispatch
+    vtable = Fiddle::Pointer.malloc(W::PTR_SIZE * 7)
+    7.times { |i| vtable[i * W::PTR_SIZE, W::PTR_SIZE] = [0].pack(W::PACK_PTR) }
+    release = Fiddle::Closure::BlockCaller.new(W::DWORD, [W::VOIDP], W::STDCALL) { |_| 0 }
+    @keep << release
+    vtable[2 * W::PTR_SIZE, W::PTR_SIZE] = [release.to_i].pack(W::PACK_PTR)
+    obj = Fiddle::Pointer.malloc(W::PTR_SIZE)
+    obj[0, W::PTR_SIZE] = [vtable.to_i].pack(W::PACK_PTR)
+    @mem.push(obj, vtable)
+    obj.to_i
+  end
+
+  def test_creates_the_object_on_the_host_with_the_remote_registrys_clsid
+    @remote = ->(host, server) { CLSID if [host, server] == %w[srv Some.App] }
+    ole = WIN32OLE.new('Some.App', 'srv')
+
+    assert_equal(@dispatch, ole.instance_variable_get(:@ptr))
+    assert_equal(
+      [{ clsid: CLSID, outer: nil, clsctx: W::CLSCTX_REMOTE_SERVER, count: 1, host: 'srv', iid: W::IID_IDISPATCH }],
+      @created
+    )
+  ensure
+    # Release while the fake still exists: teardown frees it, and a GC
+    # finalizer on a thread with OLE would then call into freed memory.
+    ole&.ole_free
+  end
+
+  def test_an_unknown_server_is_an_error
+    err = assert_raise(WIN32OLE::RuntimeError) { WIN32OLE.new('No.Such', 'srv') }
+    assert_match(/unknown OLE server: `No.Such'/, err.message)
+    assert_empty(@created)
+  end
+
+  def test_a_failed_creation_names_server_and_host
+    @remote = ->(*) { CLSID }
+    @create_hr = -2147023174 # RPC_S_SERVER_UNAVAILABLE
+    err = assert_raise(WIN32OLE::RuntimeError) { WIN32OLE.new('Some.App', 'srv') }
+    assert_match(/failed to create DCOM server `Some.App' in `srv'/, err.message)
+  end
+end

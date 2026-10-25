@@ -1,0 +1,78 @@
+# frozen_string_literal: true
+
+require 'test/unit'
+
+require 'win32ole/ffi/array'
+
+class TestSafeArray < Test::Unit::TestCase
+  SA = WIN32OLE::SafeArray
+
+  def test_dimension_count_for_a_flat_array
+    assert_equal(1, SA.dimension_count([1, 2, 3]))
+  end
+
+  def test_dimension_count_for_a_nested_array
+    assert_equal(2, SA.dimension_count([[1, 2], [3, 4]]))
+  end
+
+  def test_dimension_count_takes_the_max_depth_across_branches
+    assert_equal(2, SA.dimension_count([[1, 2], 3]))
+  end
+
+  def test_dimension_sizes_for_a_2d_array
+    assert_equal([2, 3], SA.dimension_sizes([[1, 2, 3], [4, 5, 6]]))
+  end
+
+  def test_dimension_sizes_takes_the_max_across_ragged_branches
+    assert_equal([2, 3], SA.dimension_sizes([[1, 2, 3], [4]]))
+  end
+
+  def test_nested_entry_reads_the_addressed_element
+    ary = [[1, 2], [3, 4]]
+    assert_equal(4, SA.nested_entry(ary, [1, 1]))
+  end
+
+  def test_nested_entry_returns_nil_past_a_shorter_branch
+    ary = [[1, 2, 3], [4]]
+    assert_nil(SA.nested_entry(ary, [1, 2]))
+  end
+
+  def test_each_fill_index_enumerates_the_innermost_dimension_fastest
+    tuples = SA.each_fill_index([2, 3]).to_a
+    assert_equal([[0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2]], tuples)
+  end
+
+  def test_each_fill_index_round_trips_a_2d_array_through_nested_entry
+    ary = [[1, 2, 3], [4, 5, 6]]
+    sizes = SA.dimension_sizes(ary)
+    values = SA.each_fill_index(sizes).map { |pid| SA.nested_entry(ary, pid) }
+    assert_equal([1, 2, 3, 4, 5, 6], values)
+  end
+
+  def test_each_read_index_enumerates_the_outermost_dimension_fastest
+    tuples = SA.each_read_index([0, 0], [1, 2]).to_a
+    assert_equal([[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]], tuples)
+  end
+
+  def test_each_read_index_respects_nonzero_lower_bounds
+    tuples = SA.each_read_index([1, 1], [2, 2]).to_a
+    assert_equal([[1, 1], [2, 1], [1, 2], [2, 2]], tuples)
+  end
+
+  def test_ruby_array_to_safearray_raises_type_error_for_non_array
+    err = assert_raise(TypeError) { SA.ruby_array_to_safearray('not an array', WIN32OLE::Win32::VT_I4) }
+    assert_match(/String/, err.message)
+  end
+
+  # ole_set_safe_array only writes while every index is in bounds, so an
+  # empty dimension means no elements at all.
+  def test_each_fill_index_yields_nothing_for_an_empty_dimension
+    assert_equal([], SA.each_fill_index([0]).to_a)
+    assert_equal([], SA.each_fill_index([1, 0]).to_a)
+  end
+
+  def test_each_read_index_yields_nothing_for_an_empty_dimension
+    assert_equal([], SA.each_read_index([0], [-1]).to_a)
+    assert_equal([], SA.each_read_index([0, 0], [1, -1]).to_a)
+  end
+end

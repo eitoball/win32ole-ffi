@@ -1,0 +1,280 @@
+diff --git a/test/win32ole/available_ole.rb b/test/win32ole/available_ole.rb
+index af397e0..81dd30a 100644
+--- a/test/win32ole/available_ole.rb
++++ b/test/win32ole/available_ole.rb
+@@ -1,5 +1,5 @@
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ 
+diff --git a/test/win32ole/err_in_callback.rb b/test/win32ole/err_in_callback.rb
+index baecf78..e6fd036 100644
+--- a/test/win32ole/err_in_callback.rb
++++ b/test/win32ole/err_in_callback.rb
+@@ -1,5 +1,5 @@
+ # frozen_string_literal: false
+-require 'win32ole'
++require 'win32ole/ffi'
+ db = WIN32OLE.new('ADODB.Connection')
+ db.connectionString = "Driver={Microsoft Text Driver (*.txt; *.csv)};DefaultDir=.;"
+ ev = WIN32OLE::Event.new(db)
+diff --git a/test/win32ole/test_err_in_callback.rb b/test/win32ole/test_err_in_callback.rb
+index bea5781..7957f8c 100644
+--- a/test/win32ole/test_err_in_callback.rb
++++ b/test/win32ole/test_err_in_callback.rb
+@@ -5,7 +5,7 @@
+ #
+ 
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ if defined?(WIN32OLE)
+diff --git a/test/win32ole/test_folderitem2_invokeverb.rb b/test/win32ole/test_folderitem2_invokeverb.rb
+index a1c2b2f..a3fec4c 100644
+--- a/test/win32ole/test_folderitem2_invokeverb.rb
++++ b/test/win32ole/test_folderitem2_invokeverb.rb
+@@ -4,7 +4,7 @@
+ #
+ 
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_nil2vtempty.rb b/test/win32ole/test_nil2vtempty.rb
+index bd86403..c27b7da 100644
+--- a/test/win32ole/test_nil2vtempty.rb
++++ b/test/win32ole/test_nil2vtempty.rb
+@@ -2,7 +2,7 @@
+ # This is test script to check that WIN32OLE should convert nil to VT_EMPTY in second try.
+ # [ruby-talk:137054]
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_ole_methods.rb b/test/win32ole/test_ole_methods.rb
+index fbade04..6dbd6ed 100644
+--- a/test/win32ole/test_ole_methods.rb
++++ b/test/win32ole/test_ole_methods.rb
+@@ -3,7 +3,7 @@
+ # This is test for [ruby-talk:196897]
+ #
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_propertyputref.rb b/test/win32ole/test_propertyputref.rb
+index 8341814..e294b08 100644
+--- a/test/win32ole/test_propertyputref.rb
++++ b/test/win32ole/test_propertyputref.rb
+@@ -1,7 +1,7 @@
+ # frozen_string_literal: false
+ require 'test/unit'
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ 
+diff --git a/test/win32ole/test_thread.rb b/test/win32ole/test_thread.rb
+index b30b234..f6d2f6e 100644
+--- a/test/win32ole/test_thread.rb
++++ b/test/win32ole/test_thread.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_win32ole.rb b/test/win32ole/test_win32ole.rb
+index 91a8ed0..47e6e9b 100644
+--- a/test/win32ole/test_win32ole.rb
++++ b/test/win32ole/test_win32ole.rb
+@@ -2,7 +2,7 @@
+ # frozen_string_literal: false
+ 
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_win32ole_event.rb b/test/win32ole/test_win32ole_event.rb
+index 8962023..b98b621 100644
+--- a/test/win32ole/test_win32ole_event.rb
++++ b/test/win32ole/test_win32ole_event.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_win32ole_method.rb b/test/win32ole/test_win32ole_method.rb
+index 4b3e255..1c384c5 100644
+--- a/test/win32ole/test_win32ole_method.rb
++++ b/test/win32ole/test_win32ole_method.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_method_event.rb b/test/win32ole/test_win32ole_method_event.rb
+index ab409a1..9dc1ffb 100644
+--- a/test/win32ole/test_win32ole_method_event.rb
++++ b/test/win32ole/test_win32ole_method_event.rb
+@@ -1,5 +1,5 @@
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ 
+diff --git a/test/win32ole/test_win32ole_param.rb b/test/win32ole/test_win32ole_param.rb
+index 551da53..25c6565 100644
+--- a/test/win32ole/test_win32ole_param.rb
++++ b/test/win32ole/test_win32ole_param.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_param_event.rb b/test/win32ole/test_win32ole_param_event.rb
+index f5a16ea..556137f 100644
+--- a/test/win32ole/test_win32ole_param_event.rb
++++ b/test/win32ole/test_win32ole_param_event.rb
+@@ -1,5 +1,5 @@
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ 
+diff --git a/test/win32ole/test_win32ole_record.rb b/test/win32ole/test_win32ole_record.rb
+index 2fae167..442db79 100644
+--- a/test/win32ole/test_win32ole_record.rb
++++ b/test/win32ole/test_win32ole_record.rb
+@@ -2,7 +2,7 @@
+ # frozen_string_literal: false
+ 
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_win32ole_type.rb b/test/win32ole/test_win32ole_type.rb
+index df1ba65..78e4f58 100644
+--- a/test/win32ole/test_win32ole_type.rb
++++ b/test/win32ole/test_win32ole_type.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_type_event.rb b/test/win32ole/test_win32ole_type_event.rb
+index 5d1c9fc..064404b 100644
+--- a/test/win32ole/test_win32ole_type_event.rb
++++ b/test/win32ole/test_win32ole_type_event.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ 
+diff --git a/test/win32ole/test_win32ole_typelib.rb b/test/win32ole/test_win32ole_typelib.rb
+index f743ad6..931d1b3 100644
+--- a/test/win32ole/test_win32ole_typelib.rb
++++ b/test/win32ole/test_win32ole_typelib.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_variable.rb b/test/win32ole/test_win32ole_variable.rb
+index 74a6cbd..c279f85 100644
+--- a/test/win32ole/test_win32ole_variable.rb
++++ b/test/win32ole/test_win32ole_variable.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_variant.rb b/test/win32ole/test_win32ole_variant.rb
+index 1837a1e..cfbb48c 100644
+--- a/test/win32ole/test_win32ole_variant.rb
++++ b/test/win32ole/test_win32ole_variant.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_variant_m.rb b/test/win32ole/test_win32ole_variant_m.rb
+index f176d1a..4700968 100644
+--- a/test/win32ole/test_win32ole_variant_m.rb
++++ b/test/win32ole/test_win32ole_variant_m.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
+diff --git a/test/win32ole/test_win32ole_variant_outarg.rb b/test/win32ole/test_win32ole_variant_outarg.rb
+index 9301a76..0a65f09 100644
+--- a/test/win32ole/test_win32ole_variant_outarg.rb
++++ b/test/win32ole/test_win32ole_variant_outarg.rb
+@@ -1,6 +1,6 @@
+ # frozen_string_literal: false
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require 'test/unit'
+diff --git a/test/win32ole/test_word.rb b/test/win32ole/test_word.rb
+index 34cfbbc..2cab007 100644
+--- a/test/win32ole/test_word.rb
++++ b/test/win32ole/test_word.rb
+@@ -3,7 +3,7 @@
+ # This is test for [ruby-Bugs#3237]
+ #
+ begin
+-  require 'win32ole'
++  require 'win32ole/ffi'
+ rescue LoadError
+ end
+ require "test/unit"
